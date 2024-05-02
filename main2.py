@@ -1,4 +1,5 @@
 import math
+import os
 import random
 
 import numpy as np
@@ -7,8 +8,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torchvision
-
-from torch.distributions.multivariate_normal import MultivariateNormal
 
 
 def set_random_seeds(random_seed=0):
@@ -52,6 +51,7 @@ class VariationalEncoder(nn.Module):
 
         # Using MultivariateNormal for sampling is awkward in PyTorch as of PyTorch 2.2,
         # because it always produces samples on CPU.
+        # from torch.distributions.multivariate_normal import MultivariateNormal
         # self.std_normal_mu = torch.zeros(self.num_latent_dims)
         # self.std_normal_std = torch.eye(self.num_latent_dims)
         # self.register_buffer('std_normal_mu_const', self.std_normal_mu)
@@ -165,6 +165,7 @@ def compute_negative_evidence_lower_bound(x, x_reconstructed, z, eps, log_std):
     # E[log q(z|x)]
     log_qz = -0.5 * torch.sum(eps**2 + log_std + torch.log(2 * pi))
     # E[log p(z)]
+    # Assuming standard normal prior.
     log_pz = -0.5 * torch.sum(z**2 + torch.log(2 * pi))
     # ELBO
     elbo = log_px + log_pz - log_qz
@@ -177,16 +178,27 @@ def compute_negative_evidence_lower_bound(x, x_reconstructed, z, eps, log_std):
     return negative_elbo_avg
 
 
-def prepare_cifar10_dataloader(num_workers=2,
-                               train_batch_size=128,
-                               eval_batch_size=256):
+class BinarizeTransform(object):
+
+    def __init__(self, threshold=0.5):
+        self.threshold = threshold
+
+    def __call__(self, x):
+        return (x > self.threshold).float()
+
+
+def prepare_cifar10_dataset(root="data"):
 
     train_transform = torchvision.transforms.Compose([
         torchvision.transforms.ToTensor(),
+        # Binarize the input using some threshold.
+        # This will improve the performance of the model.
+        BinarizeTransform(threshold=0.5),
     ])
 
     test_transform = torchvision.transforms.Compose([
         torchvision.transforms.ToTensor(),
+        BinarizeTransform(threshold=0.5),
     ])
 
     train_set = torchvision.datasets.MNIST(root="data",
@@ -198,6 +210,17 @@ def prepare_cifar10_dataloader(num_workers=2,
                                           train=False,
                                           download=True,
                                           transform=test_transform)
+
+    class_names = train_set.classes
+
+    return train_set, test_set, class_names
+
+
+def prepare_cifar10_dataloader(train_set,
+                               test_set,
+                               train_batch_size=128,
+                               eval_batch_size=256,
+                               num_workers=2):
 
     train_sampler = torch.utils.data.RandomSampler(train_set)
     test_sampler = torch.utils.data.SequentialSampler(test_set)
@@ -212,15 +235,111 @@ def prepare_cifar10_dataloader(num_workers=2,
                                               sampler=test_sampler,
                                               num_workers=num_workers)
 
-    class_names = train_set.classes
+    return train_loader, test_loader
 
-    return train_loader, test_loader, class_names
+
+def train(model,
+          device,
+          train_loader,
+          loss_func,
+          optimizer,
+          epoch,
+          log_interval=10):
+
+    model.train()
+    train_loss = 0
+    for batch_idx, (x, _) in enumerate(train_loader):
+        image_height = x.shape[2]
+        image_width = x.shape[3]
+        x = x.to(device)
+        x = x.view(-1, image_height * image_width)
+        optimizer.zero_grad()
+        x_reconstructed, z, eps, log_std = model(x)
+        loss = loss_func(x, x_reconstructed, z, eps, log_std)
+        loss.backward()
+        train_loss += loss.item() * len(x)
+        optimizer.step()
+        if batch_idx % log_interval == 0:
+            print(
+                f"Train Epoch: {epoch} [{batch_idx * len(x)}/{len(train_loader.dataset)} "
+                f"({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}"
+            )
+    avg_train_loss = train_loss / len(train_loader.dataset)
+    print(f"====> Epoch: {epoch} Average Loss: {avg_train_loss:.4f}")
+
+
+def test(model, device, num_samples, test_loader, loss_func, epoch,
+         results_dir):
+
+    model.eval()
+    test_loss = 0
+    with torch.no_grad():
+        for i, (x, _) in enumerate(test_loader):
+            x = x.to(device)
+            x = x.view(-1, model.num_observed_dims)
+            x_reconstructed, z, eps, log_std = model(x)
+            loss = loss_func(x, x_reconstructed, z, eps, log_std)
+            test_loss += loss.item() * len(x)
+            if i == 0:
+                n = min(x.size(0), num_samples)
+                comparison = torch.cat([
+                    x.view(x.size(0), 1, 28, 28)[:n],
+                    x_reconstructed.view(x.size(0), 1, 28, 28)[:n]
+                ])
+                torchvision.utils.save_image(
+                    comparison.cpu(),
+                    f"{results_dir}/reconstruction_{epoch}.png",
+                    nrow=n)
+    test_loss /= len(test_loader.dataset)
+    print(f"====> Test set loss: {test_loss:.4f}")
+
+
+def sample_random_images_using_std_normal_prior(model, device, num_samples,
+                                                epoch, results_dir):
+
+    model.eval()
+    with torch.no_grad():
+        sample = torch.randn(num_samples, model.num_latent_dims).to(device)
+        sample = model.decoder(sample).cpu()
+        torchvision.utils.save_image(
+            sample.view(num_samples, 1, 28, 28),
+            f"{results_dir}/sample_using_std_normal_prior_{epoch}.png")
+
+
+def sample_random_images_using_reference_images(model, device, data_set,
+                                                num_samples, epoch,
+                                                results_dir):
+
+    model.eval()
+    with torch.no_grad():
+        indices = np.random.choice(len(data_set), num_samples, replace=False)
+        sample = torch.stack([data_set[i][0] for i in indices])
+        sample = sample.to(device)
+        sample = sample.view(-1, model.num_observed_dims)
+        sample, _, _, _ = model(sample)
+        torchvision.utils.save_image(
+            sample.view(num_samples, 1, 28, 28),
+            f"{results_dir}/sample_using_reference_images_{epoch}.png")
+
+
+def sample_ground_truth_images(data_set, num_samples, results_dir):
+
+    indices = np.random.choice(len(data_set), num_samples, replace=False)
+    sample = torch.stack([data_set[i][0] for i in indices])
+    torchvision.utils.save_image(sample,
+                                 f"{results_dir}/ground_truth_sample.png")
 
 
 def main():
 
     cuda_device = torch.device("cuda:0")
-    cpu_device = torch.device("cpu")
+
+    results_dir = "results"
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+    model_dir = "models"
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
 
     random_seed = 0
     set_random_seeds(random_seed=random_seed)
@@ -229,14 +348,29 @@ def main():
     mnist_image_width = 28
 
     num_observed_dims = mnist_image_height * mnist_image_width
-    num_latent_dims = 64
+    # This is a parameter to tune.
+    # It should neither be too small nor too large.
+    num_latent_dims = 32
     num_hidden_dims = 512
 
-    num_epochs = 30
+    num_epochs = 100
     learning_rate = 1e-3
+    log_interval = 10
 
-    train_loader, test_loader, class_names = prepare_cifar10_dataloader(
-        num_workers=1, train_batch_size=128, eval_batch_size=256)
+    num_random_samples = 64
+
+    train_set, test_set, class_names = prepare_cifar10_dataset(root="data")
+
+    sample_ground_truth_images(data_set=train_set,
+                               num_samples=num_random_samples,
+                               results_dir=results_dir)
+
+    train_loader, test_loader = prepare_cifar10_dataloader(
+        train_set=train_set,
+        test_set=test_set,
+        train_batch_size=128,
+        eval_batch_size=256,
+        num_workers=2)
 
     model = VAE(num_observed_dims=num_observed_dims,
                 num_latent_dims=num_latent_dims,
@@ -246,34 +380,36 @@ def main():
 
     for epoch in range(num_epochs):
 
-        for i, (x, _) in enumerate(train_loader):
+        train(model=model,
+              device=cuda_device,
+              train_loader=train_loader,
+              loss_func=compute_negative_evidence_lower_bound,
+              optimizer=optimizer,
+              epoch=epoch,
+              log_interval=log_interval)
+        test(model=model,
+             device=cuda_device,
+             num_samples=16,
+             test_loader=test_loader,
+             loss_func=compute_negative_evidence_lower_bound,
+             epoch=epoch,
+             results_dir=results_dir)
+        sample_random_images_using_std_normal_prior(
+            model=model,
+            device=cuda_device,
+            num_samples=num_random_samples,
+            epoch=epoch,
+            results_dir=results_dir)
+        sample_random_images_using_reference_images(
+            model=model,
+            device=cuda_device,
+            data_set=train_set,
+            num_samples=num_random_samples,
+            epoch=epoch,
+            results_dir=results_dir)
 
-            x = x.to(cuda_device)
-            x = x.view(-1, 784)
-
-            optimizer.zero_grad()
-
-            x_reconstructed, z, eps, log_std = model(x)
-
-            negative_elbo_avg = compute_negative_evidence_lower_bound(
-                x, x_reconstructed, z, eps, log_std)
-
-            negative_elbo_avg.backward()
-
-            optimizer.step()
-
-            print(
-                f"Epoch: {epoch}, Batch: {i}, Negative ELBO: {negative_elbo_avg.item()}"
-            )
-
-    # Create some random samples.
-    num_random_samples = 10
-    z = torch.randn(num_random_samples, num_latent_dims).to(cuda_device)
-    x_reconstructed = model.decoder(z)
-    x_reconstructed = x_reconstructed.view(-1, 1, 28, 28)
-    torchvision.utils.save_image(x_reconstructed,
-                                 "results/random_samples.png",
-                                 nrow=10)
+    # Save the model.
+    torch.save(model.state_dict(), f"{model_dir}/model.pth")
 
 
 if __name__ == "__main__":
