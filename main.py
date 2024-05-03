@@ -419,7 +419,7 @@ def main():
     num_hidden_dims = 1024
 
     # 30 epochs is sufficient for MNIST and 2D manifold.
-    num_epochs = 1
+    num_epochs = 30
     learning_rate = 1e-3
     log_interval = 10
 
