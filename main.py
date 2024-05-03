@@ -272,6 +272,10 @@ def train(model,
 def test(model, device, num_samples, test_loader, loss_func, epoch,
          results_dir):
 
+    image_dir = os.path.join(results_dir, "reconstruction")
+    if not os.path.exists(image_dir):
+        os.makedirs(image_dir)
+
     model.eval()
     test_loss = 0
     with torch.no_grad():
@@ -289,14 +293,18 @@ def test(model, device, num_samples, test_loader, loss_func, epoch,
                 ])
                 torchvision.utils.save_image(
                     comparison.cpu(),
-                    f"{results_dir}/reconstruction_{epoch}.png",
+                    os.path.join(image_dir, f"reconstruction_{epoch}.png"),
                     nrow=n)
-    test_loss /= len(test_loader.dataset)
-    print(f"====> Test set loss: {test_loss:.4f}")
+    avg_test_loss = test_loss / len(test_loader.dataset)
+    print(f"====> Test set loss: {avg_test_loss:.4f}")
 
 
 def sample_random_images_using_std_normal_prior(model, device, num_samples,
                                                 epoch, results_dir):
+
+    image_dir = os.path.join(results_dir, "sample_using_std_normal_prior")
+    if not os.path.exists(image_dir):
+        os.makedirs(image_dir)
 
     model.eval()
     with torch.no_grad():
@@ -304,11 +312,17 @@ def sample_random_images_using_std_normal_prior(model, device, num_samples,
         sample = model.decoder(sample).cpu()
         torchvision.utils.save_image(
             sample.view(num_samples, 1, 28, 28),
-            f"{results_dir}/sample_using_std_normal_prior_{epoch}.png")
+            os.path.join(image_dir,
+                         f"sample_using_std_normal_prior_{epoch}.png"))
 
 
 def sample_random_images_using_2d_std_normal_prior_inverse_cdf(
         model, device, num_samples, epoch, results_dir):
+
+    image_dir = os.path.join(results_dir,
+                             "sample_using_2d_std_normal_prior_inverse_cdf")
+    if not os.path.exists(image_dir):
+        os.makedirs(image_dir)
 
     num_samples_per_dimension = int(math.sqrt(num_samples))
     cumulative_probability_samples = np.linspace(start=0.0001,
@@ -337,7 +351,9 @@ def sample_random_images_using_2d_std_normal_prior_inverse_cdf(
     # Save images. num_samples_per_dimension rows and columns.
     torchvision.utils.save_image(
         samples.view(num_samples, 1, 28, 28),
-        f"{results_dir}/sample_using_2d_std_normal_prior_inverse_cdf_{epoch}.png",
+        os.path.join(
+            image_dir,
+            f"sample_using_2d_std_normal_prior_inverse_cdf_{epoch}.png"),
         nrow=num_samples_per_dimension)
 
 
@@ -345,24 +361,35 @@ def sample_random_images_using_reference_images(model, device, data_set,
                                                 num_samples, epoch,
                                                 results_dir):
 
+    image_dir = os.path.join(results_dir, "sample_using_reference")
+    if not os.path.exists(image_dir):
+        os.makedirs(image_dir)
+    reference_image_dir = os.path.join(results_dir, "reference")
+    if not os.path.exists(reference_image_dir):
+        os.makedirs(reference_image_dir)
+
     model.eval()
     with torch.no_grad():
         indices = np.random.choice(len(data_set), num_samples, replace=False)
-        sample = torch.stack([data_set[i][0] for i in indices])
-        sample = sample.to(device)
-        sample = sample.view(-1, model.num_observed_dims)
-        sample, _, _, _ = model(sample)
+        reference = torch.stack([data_set[i][0] for i in indices])
+        reference = reference.to(device)
+        reference = reference.view(-1, model.num_observed_dims)
+        sample, _, _, _ = model(reference)
         torchvision.utils.save_image(
             sample.view(num_samples, 1, 28, 28),
-            f"{results_dir}/sample_using_reference_images_{epoch}.png")
+            os.path.join(image_dir,
+                         f"sample_using_reference_images_{epoch}.png"))
+        torchvision.utils.save_image(
+            reference.view(num_samples, 1, 28, 28),
+            os.path.join(reference_image_dir, f"reference_images_{epoch}.png"))
 
 
 def sample_ground_truth_images(data_set, num_samples, results_dir):
 
     indices = np.random.choice(len(data_set), num_samples, replace=False)
     sample = torch.stack([data_set[i][0] for i in indices])
-    torchvision.utils.save_image(sample,
-                                 f"{results_dir}/ground_truth_sample.png")
+    torchvision.utils.save_image(
+        sample, os.path.join(results_dir, "ground_truth_sample.png"))
 
 
 def main():
@@ -375,6 +402,9 @@ def main():
     model_dir = "models"
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
+    data_dir = "data"
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
 
     random_seed = 0
     set_random_seeds(random_seed=random_seed)
@@ -386,20 +416,17 @@ def main():
     # This is a parameter to tune.
     # It should neither be too small nor too large.
     num_latent_dims = 2
-    num_hidden_dims = 512
+    num_hidden_dims = 1024
 
     # 30 epochs is sufficient for MNIST and 2D manifold.
-    num_epochs = 30
-    # learning_rate = 1e-3
+    num_epochs = 1
     learning_rate = 1e-3
     log_interval = 10
 
-    num_random_samples = 64
-
-    train_set, test_set, class_names = prepare_cifar10_dataset(root="data")
+    train_set, test_set, class_names = prepare_cifar10_dataset(root=data_dir)
 
     sample_ground_truth_images(data_set=train_set,
-                               num_samples=num_random_samples,
+                               num_samples=64,
                                results_dir=results_dir)
 
     train_loader, test_loader = prepare_cifar10_dataloader(
@@ -431,28 +458,33 @@ def main():
              loss_func=compute_negative_evidence_lower_bound,
              epoch=epoch,
              results_dir=results_dir)
-        sample_random_images_using_std_normal_prior(
-            model=model,
-            device=cuda_device,
-            num_samples=num_random_samples,
-            epoch=epoch,
-            results_dir=results_dir)
-        sample_random_images_using_reference_images(
-            model=model,
-            device=cuda_device,
-            data_set=train_set,
-            num_samples=num_random_samples,
-            epoch=epoch,
-            results_dir=results_dir)
-        sample_random_images_using_2d_std_normal_prior_inverse_cdf(
-            model=model,
-            device=cuda_device,
-            num_samples=400,
-            epoch=epoch,
-            results_dir=results_dir)
+        sample_random_images_using_std_normal_prior(model=model,
+                                                    device=cuda_device,
+                                                    num_samples=64,
+                                                    epoch=epoch,
+                                                    results_dir=results_dir)
+        sample_random_images_using_reference_images(model=model,
+                                                    device=cuda_device,
+                                                    data_set=train_set,
+                                                    num_samples=64,
+                                                    epoch=epoch,
+                                                    results_dir=results_dir)
+        if num_latent_dims == 2:
+            sample_random_images_using_2d_std_normal_prior_inverse_cdf(
+                model=model,
+                device=cuda_device,
+                num_samples=400,
+                epoch=epoch,
+                results_dir=results_dir)
 
     # Save the model.
-    torch.save(model.state_dict(), f"{model_dir}/model.pth")
+    torch.save(model.state_dict(), os.path.join(model_dir, "model.pth"))
+    # Export the decoder to ONNX using Opset 13.
+    z = torch.randn(1, num_latent_dims).to(cuda_device)
+    torch.onnx.export(model.decoder,
+                      z,
+                      os.path.join(model_dir, "decoder.onnx"),
+                      opset_version=13)
 
 
 if __name__ == "__main__":
