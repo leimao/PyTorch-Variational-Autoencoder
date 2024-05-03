@@ -2,6 +2,8 @@
 
 ## Introduction
 
+PyTorch variational autoencoder (VAE) example for MNIST dataset. The modeled posterior distribution follows a Gaussian distribution with a full covariance matrix.
+
 ## Usages
 
 ### Build Docker Image
@@ -16,7 +18,7 @@ $ docker build -f docker/pytorch.Dockerfile --no-cache --tag=pytorch:2.2.0 .
 $ docker run -it --rm --gpus device=0 --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 -v $(pwd):/mnt pytorch:2.2.0
 ```
 
-### Train Variational Autoencoder
+### Run Variational Autoencoder MNIST Training
 
 ```bash
 $ python train.py
