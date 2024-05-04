@@ -480,10 +480,14 @@ def main():
     # Save the model.
     torch.save(model.state_dict(), os.path.join(model_dir, "model.pth"))
     # Export the decoder to ONNX using Opset 13.
+    # The decoder input name should be "input" and output name should be "output".
     z = torch.randn(1, num_latent_dims).to(cuda_device)
+    model.decoder.eval()
     torch.onnx.export(model.decoder,
                       z,
                       os.path.join(model_dir, "decoder.onnx"),
+                      input_names=["input"],
+                      output_names=["output"],
                       opset_version=13)
 
 
