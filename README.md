@@ -30,5 +30,5 @@ The results will be saved to the `results` directory.
 
 ## References
 
-- [Variational Autoencoder](https://leimao.github.io/blog/blog/Variational-Autoencoder/)
-- [PyTorch Variational Autoencoder](https://leimao.github.io/blog/blog/PyTorch-Variational-Autoencoder/)
+- [Variational Autoencoder](https://leimao.github.io/blog/Variational-Autoencoder/)
+- [PyTorch Variational Autoencoder](https://leimao.github.io/blog/PyTorch-Variational-Autoencoder/)
